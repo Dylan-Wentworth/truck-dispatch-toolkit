@@ -133,6 +133,8 @@ if (pricePerGallon < 0) {
   detourMiles,
   totalCost: round2(gallons * pricePerGallon + detourCost),
 };
+  });
+  
   const highest = Math.max(...priced.map((o) => o.totalCost));
   for (const option of priced) {
     option.savingsVsHighest = round2(highest - option.totalCost);
