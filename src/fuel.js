@@ -32,8 +32,15 @@ function planFuel({
   tankCapacityGallons,
   startingGallons,
   fuelPricePerGallon,
+  fuelState,
+  fuelPriceDate,
   reserveGallons = 15,
 } = {}) {
+  if (fuelPricePerGallon === undefined &&
+      fuelState !== undefined &&
+      fuelPriceDate !== undefined) {
+    fuelPricePerGallon = fuelPriceForState(fuelState, fuelPriceDate);
+  }
   const numbers = { totalMiles, mpg, tankCapacityGallons, startingGallons, fuelPricePerGallon, reserveGallons };
   for (const [name, value] of Object.entries(numbers)) {
     assertFiniteNumber(value, name);
@@ -92,10 +99,21 @@ function priceCompare({ gallons, options } = {}) {
     if (typeof option.name !== 'string' || option.name.trim() === '') {
       throw new RangeError('options[' + i + '].name must be a non-empty string');
     }
-    assertFiniteNumber(option.pricePerGallon, 'options[' + i + '].pricePerGallon');
-    if (option.pricePerGallon < 0) {
-      throw new RangeError('options[' + i + '].pricePerGallon must be 0 or more');
-    }
+   let pricePerGallon = option.pricePerGallon;
+
+if (pricePerGallon === undefined &&
+    option.fuelState !== undefined &&
+    option.fuelPriceDate !== undefined) {
+  pricePerGallon = fuelPriceForState(
+    option.fuelState,
+    option.fuelPriceDate
+  );
+}
+
+assertFiniteNumber(pricePerGallon, 'options[' + i + '].pricePerGallon');
+if (pricePerGallon < 0) {
+  throw new RangeError('options[' + i + '].pricePerGallon must be 0 or more');
+}
     const detourMiles = option.detourMiles === undefined ? 0 : option.detourMiles;
     assertFiniteNumber(detourMiles, 'options[' + i + '].detourMiles');
     if (detourMiles < 0) throw new RangeError('options[' + i + '].detourMiles must be 0 or more');
@@ -103,20 +121,18 @@ function priceCompare({ gallons, options } = {}) {
     if (detourMiles > 0) {
       assertFiniteNumber(option.mpg, 'options[' + i + '].mpg (required when detourMiles is set)');
       if (option.mpg <= 0) throw new RangeError('options[' + i + '].mpg must be greater than 0');
-      const detourPrice = option.fuelPriceForDetour === undefined
-        ? option.pricePerGallon
-        : option.fuelPriceForDetour;
+     const detourPrice = option.fuelPriceForDetour === undefined
+  ? pricePerGallon
+  : option.fuelPriceForDetour;
       assertFiniteNumber(detourPrice, 'options[' + i + '].fuelPriceForDetour');
       detourCost = (detourMiles / option.mpg) * detourPrice;
     }
-    return {
-      name: option.name,
-      pricePerGallon: option.pricePerGallon,
-      detourMiles,
-      totalCost: round2(gallons * option.pricePerGallon + detourCost),
-    };
-  });
-
+   return {
+  name: option.name,
+  pricePerGallon,
+  detourMiles,
+  totalCost: round2(gallons * pricePerGallon + detourCost),
+};
   const highest = Math.max(...priced.map((o) => o.totalCost));
   for (const option of priced) {
     option.savingsVsHighest = round2(highest - option.totalCost);
