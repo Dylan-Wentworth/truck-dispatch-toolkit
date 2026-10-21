@@ -70,6 +70,47 @@ before starting, and claim an issue by commenting on it.
   must still pass untouched.
 * **Size:** medium. Keep the design clean and printable.
 
+## 7. GitHub Pages live demo
+
+* **Scope:** Once issue 6 (the static demo page in `docs/demo/`)
+  exists, publish it with GitHub Pages from the `docs/` folder and
+  link it from the README. Verify every calculator on the live page
+  against the CLI examples, including the new lane, broker, fuel,
+  check-call, and accessorial tools where the page supports them.
+* **Tests:** manual checklist in the PR: each live calculator
+  reproduces the README example output, and the page loads with no
+  console errors from a cold cache.
+* **Size:** small. Mostly settings, a link, and careful checking.
+  Depends on issue 6.
+
+## 8. CSV import for the lane book
+
+* **Scope:** A `lane-import` CLI command (and a `fromCSV` helper in
+  `src/lanes.js`) that reads a spreadsheet export of booked loads
+  with header columns origin, dest, equipment, linehaul, miles, and
+  date, and appends them to a lane book JSON file. Bad rows are
+  reported with line numbers, not silently skipped.
+* **Tests:** a small fixture CSV imports with exact RPMs, a row with
+  a missing miles value is rejected and reported, and the imported
+  book produces the same `laneStats` as the same loads added by hand.
+* **Size:** medium. CSV parsing stays dependency-free; quoted fields
+  with commas are the interesting edge.
+
+## 9. Per-state fuel price table as data
+
+* **Scope:** Mirror the IFTA data approach for fuel prices: add
+  `src/data/fuel-prices/` with dated JSON snapshots of average
+  diesel prices by state (sourced from published EIA weekly data,
+  with the source and date recorded in each file), plus a loader in
+  `src/fuel.js` so `priceCompare` and `planFuel` can pull a state's
+  price by name. Snapshots are history, clearly labelled as not live
+  prices.
+* **Tests:** loader returns a price for a known state and snapshot,
+  throws a clear error for a missing snapshot, and a price pulled
+  from the table feeds `priceCompare` unchanged.
+* **Size:** medium. Careful data entry plus a small loader, same
+  shape as issue 1.
+
 ---
 
 Finished one? Open the pull request with the test output pasted in.

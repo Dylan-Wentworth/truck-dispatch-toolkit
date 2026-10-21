@@ -247,4 +247,365 @@ test('index: all modules re-exported', () => {
   assert.strictEqual(toolkit.IFTA_DEFAULT_RATES.TX, 0.2);
 });
 
+// ---------- lanes ----------
+const { createLaneBook, addLoad, laneStats, rateGuard, equipmentBreakdown } = toolkit;
+
+function sampleBook() {
+  // TX to OK, dry van. RPMs by hand: 1500/500 = 3.00, 1320/440 = 3.00,
+  // 1200/500 = 2.40. Inserted out of date order on purpose.
+  const book = createLaneBook();
+  addLoad(book, { originState: 'tx', destState: 'ok', linehaul: 1500, loadedMiles: 500, dateISO: '2026-09-15' });
+  addLoad(book, { originState: 'TX', destState: 'OK', linehaul: 1320, loadedMiles: 440, dateISO: '2026-10-02' });
+  addLoad(book, { originState: 'TX', destState: 'OK', linehaul: 1200, loadedMiles: 500, dateISO: '2026-09-01' });
+  return book;
+}
+
+test('lanes: addLoad normalizes states and stores the computed rpm', () => {
+  const book = createLaneBook();
+  const load = addLoad(book, { originState: 'tx', destState: 'ok', linehaul: 1500, loadedMiles: 500, dateISO: '2026-09-15' });
+  assert.strictEqual(load.lane, 'TX-OK');
+  assert.strictEqual(load.equipment, 'dry van');
+  assert.strictEqual(load.rpm, 3);
+  assert.strictEqual(book.loads.length, 1);
+});
+
+test('lanes: laneStats averages the booked history', () => {
+  // avg rpm = (3.00 + 3.00 + 2.40) / 3 = 2.80; median of [2.40, 3.00, 3.00] = 3.00
+  // avg linehaul = (1500 + 1320 + 1200) / 3 = 1340; last date = 2026-10-02
+  const s = laneStats(sampleBook(), { originState: 'TX', destState: 'OK' });
+  assert.strictEqual(s.count, 3);
+  assert.strictEqual(s.avgRpm, 2.8);
+  assert.strictEqual(s.medianRpm, 3);
+  assert.strictEqual(s.minRpm, 2.4);
+  assert.strictEqual(s.maxRpm, 3);
+  assert.strictEqual(s.avgLinehaul, 1340);
+  assert.strictEqual(s.lastDateISO, '2026-10-02');
+});
+
+test('lanes: laneStats is null with no loads, and equipment filter applies', () => {
+  const book = sampleBook();
+  assert.strictEqual(laneStats(book, { originState: 'TX', destState: 'NM' }), null);
+  assert.strictEqual(laneStats(book, { originState: 'TX', destState: 'OK', equipment: 'reefer' }), null);
+  assert.strictEqual(laneStats(book, { originState: 'TX', destState: 'OK', equipment: 'Dry Van' }).count, 3);
+});
+
+test('lanes: rateGuard refuses to judge on a single load', () => {
+  const book = createLaneBook();
+  addLoad(book, { originState: 'TX', destState: 'OK', linehaul: 1500, loadedMiles: 500, dateISO: '2026-09-15' });
+  const g = rateGuard(book, { originState: 'TX', destState: 'OK', offeredLinehaul: 1400, loadedMiles: 500 });
+  assert.strictEqual(g.verdict, 'insufficient history');
+  assert.strictEqual(g.sampleSize, 1);
+});
+
+test('lanes: rateGuard at or above your average', () => {
+  // offered 1450 / 500 = 2.90 vs average 2.80; diff = 0.10 / 2.80 = 3.57 percent
+  const g = rateGuard(sampleBook(), { originState: 'TX', destState: 'OK', offeredLinehaul: 1450, loadedMiles: 500 });
+  assert.strictEqual(g.verdict, 'at or above your average');
+  assert.strictEqual(g.offeredRpm, 2.9);
+  assert.strictEqual(g.avgRpm, 2.8);
+  assert.strictEqual(g.percentDiff, 3.57);
+});
+
+test('lanes: rateGuard below average counters at your average', () => {
+  // offered 1330 / 500 = 2.66, which is 5 percent under the 2.80 average
+  // counter = 2.80 * 500 = 1400
+  const g = rateGuard(sampleBook(), { originState: 'TX', destState: 'OK', offeredLinehaul: 1330, loadedMiles: 500 });
+  assert.strictEqual(g.verdict, 'below average, counter suggested');
+  assert.strictEqual(g.percentDiff, -5);
+  assert.strictEqual(g.suggestedCounter, 1400);
+});
+
+test('lanes: rateGuard lowball counters at average plus 10 percent', () => {
+  // offered 1200 / 500 = 2.40; below = 0.40 / 2.80 = 14.29 percent
+  // counter = 2.80 * 1.1 * 500 = 1540
+  const g = rateGuard(sampleBook(), { originState: 'TX', destState: 'OK', offeredLinehaul: 1200, loadedMiles: 500 });
+  assert.strictEqual(g.verdict, 'lowball');
+  assert.strictEqual(g.percentBelow, 14.29);
+  assert.strictEqual(g.percentDiff, -14.29);
+  assert.strictEqual(g.suggestedCounter, 1540);
+});
+
+test('lanes: JSON round trip restores the book and recomputes rpm', () => {
+  const book = sampleBook();
+  const restored = toolkit.lanes.fromJSON(toolkit.lanes.toJSON(book));
+  assert.strictEqual(restored.loads.length, 3);
+  assert.strictEqual(restored.loads[0].rpm, 3);
+  const s = laneStats(restored, { originState: 'TX', destState: 'OK' });
+  assert.strictEqual(s.avgRpm, 2.8);
+  assert.throws(() => toolkit.lanes.fromJSON('{"nope":1}'), RangeError);
+  assert.throws(() => toolkit.lanes.fromJSON('not json'), RangeError);
+});
+
+test('lanes: equipmentBreakdown counts and averages per equipment', () => {
+  const book = createLaneBook();
+  addLoad(book, { originState: 'TX', destState: 'OK', linehaul: 1500, loadedMiles: 500, dateISO: '2026-09-15' });
+  addLoad(book, { originState: 'TX', destState: 'NM', linehaul: 1200, loadedMiles: 500, dateISO: '2026-09-20' });
+  addLoad(book, { originState: 'TX', destState: 'OK', equipment: 'reefer', linehaul: 1800, loadedMiles: 500, dateISO: '2026-09-22' });
+  const b = equipmentBreakdown(book);
+  assert.strictEqual(b['dry van'].count, 2);
+  assert.strictEqual(b['dry van'].avgRpm, 2.7); // (3.00 + 2.40) / 2
+  assert.strictEqual(b.reefer.count, 1);
+  assert.strictEqual(b.reefer.avgRpm, 3.6);
+});
+
+// ---------- broker ----------
+const { scoreBroker, quickPayMath } = toolkit;
+
+test('broker: on-time payer grades A', () => {
+  // days 25, 28, 30 on 30-day terms: avg = 83 / 3 = 27.67, none late
+  const s = scoreBroker({
+    invoices: [
+      { amount: 2000, daysToPay: 25 },
+      { amount: 1800, daysToPay: 28 },
+      { amount: 2400, daysToPay: 30 },
+    ],
+    termsDays: 30,
+  });
+  assert.strictEqual(s.grade, 'A');
+  assert.strictEqual(s.avgDaysToPay, 27.67);
+  assert.strictEqual(s.medianDaysToPay, 28);
+  assert.strictEqual(s.latePercent, 0);
+  assert.strictEqual(s.totalBilled, 6200);
+  assert.strictEqual(s.totalOutstanding, 0);
+  assert.strictEqual(s.recommendation, 'Safe to book, standard terms');
+  assert.deepStrictEqual(s.flags, []);
+});
+
+test('broker: slow payer at 45 and 50 days grades D', () => {
+  // avg 47.5: over terms + 15 (45) but inside terms + 30 (60)
+  const s = scoreBroker({
+    invoices: [
+      { amount: 1500, daysToPay: 45 },
+      { amount: 1500, daysToPay: 50 },
+    ],
+    termsDays: 30,
+  });
+  assert.strictEqual(s.grade, 'D');
+  assert.strictEqual(s.avgDaysToPay, 47.5);
+  assert.strictEqual(s.latePercent, 100);
+  assert.strictEqual(s.recommendation, 'Quick-pay or fuel advance only');
+});
+
+test('broker: mixed history, late percent, unpaid flag and outstanding', () => {
+  // paid days 20, 35, 40, 28: avg = 123 / 4 = 30.75, median = (28 + 35) / 2 = 31.5
+  // late = 2 of 4 = 50 percent, which blocks B, so the grade is C
+  const s = scoreBroker({
+    invoices: [
+      { amount: 1000, daysToPay: 20 },
+      { amount: 1000, daysToPay: 35 },
+      { amount: 1000, daysToPay: 40 },
+      { amount: 1000, daysToPay: 28 },
+      { amount: 750, paid: false },
+    ],
+    termsDays: 30,
+  });
+  assert.strictEqual(s.paidCount, 4);
+  assert.strictEqual(s.unpaidCount, 1);
+  assert.strictEqual(s.avgDaysToPay, 30.75);
+  assert.strictEqual(s.medianDaysToPay, 31.5);
+  assert.strictEqual(s.latePercent, 50);
+  assert.strictEqual(s.grade, 'C');
+  assert.strictEqual(s.totalBilled, 4750);
+  assert.strictEqual(s.totalOutstanding, 750);
+  assert.deepStrictEqual(s.flags, ['has unpaid invoices']);
+});
+
+test('broker: empty invoice list throws', () => {
+  assert.throws(() => scoreBroker({ invoices: [] }), RangeError);
+});
+
+test('broker: quickPayMath annualizes the fee', () => {
+  // fee = 2 percent of 2000 = 40; net = 1960
+  // effective annual = (40 / 1960) * (365 / 20) * 100 = 37.2448... -> 37.24
+  const q = quickPayMath({ amount: 2000, quickPayPercent: 2, daysEarly: 20 });
+  assert.strictEqual(q.fee, 40);
+  assert.strictEqual(q.netReceived, 1960);
+  assert.strictEqual(q.effectiveAnnualRatePercent, 37.24);
+});
+
+// ---------- fuel ----------
+const { planFuel, priceCompare } = toolkit;
+
+test('fuel: 1100 miles at 6.5 mpg burns 169.23 gallons', () => {
+  // gallons = 1100 / 6.5 = 169.2307; buy = 169.2307 + 15 reserve - 50 in tank = 134.23
+  // starting range = 50 * 6.5 = 325 mi; one fill of (150 - 15) * 6.5 = 877.5 mi covers the rest
+  // burn cost = 169.2307 * 3.80 = 643.08; per mile = 0.58
+  const f = planFuel({
+    totalMiles: 1100, mpg: 6.5, tankCapacityGallons: 150,
+    startingGallons: 50, fuelPricePerGallon: 3.8,
+  });
+  assert.strictEqual(f.gallonsNeeded, 169.23);
+  assert.strictEqual(f.fuelToBuy, 134.23);
+  assert.strictEqual(f.stopsNeeded, 1);
+  assert.strictEqual(f.rangeMilesOnFullTank, 975);
+  assert.strictEqual(f.burnCost, 643.08);
+  assert.strictEqual(f.burnCostPerMile, 0.58);
+});
+
+test('fuel: stops counted on usable gallons per fill', () => {
+  // 1800 mi at 6 mpg = 300 gal; buy = 300 + 15 - 30 = 285
+  // starting range = 180 mi; each fill covers (120 - 15) * 6 = 630 mi
+  // stops = ceil((1800 - 180) / 630) = ceil(2.5714) = 3
+  const f = planFuel({
+    totalMiles: 1800, mpg: 6, tankCapacityGallons: 120,
+    startingGallons: 30, fuelPricePerGallon: 3.9, reserveGallons: 15,
+  });
+  assert.strictEqual(f.gallonsNeeded, 300);
+  assert.strictEqual(f.fuelToBuy, 285);
+  assert.strictEqual(f.stopsNeeded, 3);
+  assert.strictEqual(f.rangeMilesOnFullTank, 720);
+  assert.strictEqual(f.burnCost, 1170);
+  assert.strictEqual(f.burnCostPerMile, 0.65);
+});
+
+test('fuel: no stop when the starting fuel covers the trip', () => {
+  const f = planFuel({
+    totalMiles: 150, mpg: 6, tankCapacityGallons: 120,
+    startingGallons: 40, fuelPricePerGallon: 4,
+  });
+  assert.strictEqual(f.stopsNeeded, 0);
+  assert.strictEqual(f.fuelToBuy, 0); // 25 needed + 15 reserve = the 40 already in the tank
+});
+
+test('fuel: priceCompare prices the detour, not just the pump', () => {
+  // Mid: 100 * 3.60 = 360. Cheap far: 100 * 3.50 + (30 / 6) * 3.80 = 350 + 19 = 369.
+  // Near pricey: 100 * 3.70 = 370. Highest is 370.
+  const out = priceCompare({
+    gallons: 100,
+    options: [
+      { name: 'Near pricey', pricePerGallon: 3.7 },
+      { name: 'Cheap far', pricePerGallon: 3.5, detourMiles: 30, mpg: 6, fuelPriceForDetour: 3.8 },
+      { name: 'Mid', pricePerGallon: 3.6 },
+    ],
+  });
+  assert.deepStrictEqual(out.map((o) => o.name), ['Mid', 'Cheap far', 'Near pricey']);
+  assert.strictEqual(out[0].totalCost, 360);
+  assert.strictEqual(out[0].savingsVsHighest, 10);
+  assert.strictEqual(out[1].totalCost, 369);
+  assert.strictEqual(out[1].savingsVsHighest, 1);
+  assert.strictEqual(out[2].totalCost, 370);
+  assert.strictEqual(out[2].savingsVsHighest, 0);
+});
+
+test('fuel: priceCompare defaults the detour price to the stop price', () => {
+  // 50 * 4.00 = 200, detour burns 12 / 6 = 2 gal at 4.00 = 8, total 208
+  const out = priceCompare({
+    gallons: 50,
+    options: [{ name: 'Only stop', pricePerGallon: 4, detourMiles: 12, mpg: 6 }],
+  });
+  assert.strictEqual(out[0].totalCost, 208);
+  assert.strictEqual(out[0].savingsVsHighest, 0);
+});
+
+// ---------- checkcall ----------
+const { planCheckCalls, formatSchedule } = toolkit;
+
+function sampleCalls() {
+  return planCheckCalls({
+    departureISO: '2026-10-05T11:00:00Z',
+    pickupISO: '2026-10-05T13:00:00Z',
+    deliveryISO: '2026-10-06T13:00:00Z',
+    intervalHours: 4,
+  });
+}
+
+test('checkcall: full milestone schedule for a next-day delivery', () => {
+  // departure 11:00, shipper 12:30, loaded 14:00, en route every 4h
+  // (18:00, 22:00, 02:00, 06:00, 10:00), one hour out 12:00, delivered 13:30
+  const calls = sampleCalls();
+  assert.strictEqual(calls.length, 10);
+  assert.strictEqual(calls[0].timeISO, '2026-10-05T11:00:00.000Z');
+  assert.strictEqual(calls[0].label, 'departed, rolling to pickup');
+  assert.strictEqual(calls[0].quiet, false);
+  const last = calls[calls.length - 1];
+  assert.strictEqual(last.label, 'delivered, POD requested');
+  assert.strictEqual(last.timeISO, '2026-10-06T13:30:00.000Z');
+  const times = calls.map((c) => c.timeISO);
+  assert.deepStrictEqual(times, [...times].sort());
+});
+
+test('checkcall: en-route calls in quiet hours are flagged, not dropped', () => {
+  const calls = sampleCalls();
+  const at2am = calls.find((c) => c.timeISO === '2026-10-06T02:00:00.000Z');
+  assert.ok(at2am);
+  assert.strictEqual(at2am.label, 'en route check call');
+  assert.strictEqual(at2am.quiet, true);
+  const at6am = calls.find((c) => c.timeISO === '2026-10-06T06:00:00.000Z');
+  assert.strictEqual(at6am.quiet, false); // quiet hours end at 06:00
+  const at10pm = calls.find((c) => c.timeISO === '2026-10-05T22:00:00.000Z');
+  assert.strictEqual(at10pm.quiet, true); // quiet hours start at 22:00
+});
+
+test('checkcall: formatSchedule renders UTC lines with quiet suffixes', () => {
+  const text = formatSchedule(sampleCalls());
+  const lines = text.split('\n');
+  assert.strictEqual(lines[0], '2026-10-05 11:00 UTC  departed, rolling to pickup');
+  assert.ok(lines.includes('2026-10-06 02:00 UTC  en route check call (quiet hours)'));
+  assert.ok(lines.includes('2026-10-06 12:00 UTC  one hour out'));
+});
+
+test('checkcall: delivery before pickup throws', () => {
+  assert.throws(() => planCheckCalls({
+    departureISO: '2026-10-05T11:00:00Z',
+    pickupISO: '2026-10-05T13:00:00Z',
+    deliveryISO: '2026-10-05T12:00:00Z',
+  }), RangeError);
+});
+
+// ---------- accessorials ----------
+const { layoverCharge, tonuCharge, combinedClaimLetter } = toolkit;
+
+test('accessorials: layover at the default daily rate', () => {
+  const l = layoverCharge({ days: 2 });
+  assert.strictEqual(l.ratePerDay, 250);
+  assert.strictEqual(l.amount, 500);
+  assert.strictEqual(layoverCharge({ days: 1, ratePerDay: 300 }).amount, 300);
+});
+
+test('accessorials: TONU default is 25 percent of linehaul, floored and capped', () => {
+  assert.strictEqual(tonuCharge({ linehaul: 2000 }).amount, 500); // 25 percent = 500, at the cap
+  assert.strictEqual(tonuCharge({ linehaul: 2400 }).amount, 500); // 600 would pass the cap
+  assert.strictEqual(tonuCharge({ linehaul: 400 }).amount, 150); // 100 raised to the floor
+  assert.strictEqual(tonuCharge({ linehaul: 1200 }).amount, 300);
+  assert.strictEqual(tonuCharge({ linehaul: 2000 }).basis, 'default 25% of linehaul, $150-$500');
+});
+
+test('accessorials: agreed TONU wins over the default', () => {
+  const t = tonuCharge({ agreedTonu: 350, linehaul: 2000 });
+  assert.strictEqual(t.amount, 350);
+  assert.strictEqual(t.basis, 'agreed');
+  assert.throws(() => tonuCharge({}), RangeError);
+});
+
+test('accessorials: combined claim letter lists every item and the total', () => {
+  const letter = combinedClaimLetter({
+    carrierName: 'Bluebonnet Carriers LLC', mcNumber: '123456',
+    brokerName: 'Acme Brokerage', loadReference: 'LD-8841',
+    items: [
+      { type: 'Detention', description: '2.25 billable hours at Dallas DC', amount: 146.25 },
+      { type: 'Layover', description: '1 day, facility closed', amount: 250 },
+    ],
+    dispatcherName: 'Sam Reyes', companyName: 'Dispatch Authority',
+    dateISO: '2026-10-07',
+  });
+  assert.ok(letter.includes('Accessorial Claim'));
+  assert.ok(letter.includes('Detention, 2.25 billable hours at Dallas DC: $146.25'));
+  assert.ok(letter.includes('Layover, 1 day, facility closed: $250.00'));
+  assert.ok(letter.includes('Total due:      $396.25'));
+  assert.ok(letter.includes('LD-8841'));
+});
+
+// ---------- index exports (new modules) ----------
+test('index: new modules re-exported, namespaced and flat', () => {
+  for (const ns of ['lanes', 'broker', 'fuel', 'checkcall', 'accessorials']) {
+    assert.strictEqual(typeof toolkit[ns], 'object', ns + ' namespace should exist');
+  }
+  for (const fn of ['createLaneBook', 'addLoad', 'laneStats', 'rateGuard', 'equipmentBreakdown',
+    'laneBookToJSON', 'laneBookFromJSON', 'scoreBroker', 'quickPayMath',
+    'planFuel', 'priceCompare', 'planCheckCalls', 'formatSchedule',
+    'layoverCharge', 'tonuCharge', 'combinedClaimLetter']) {
+    assert.strictEqual(typeof toolkit[fn], 'function', fn + ' should be exported');
+  }
+});
+
 console.log('\nAll ' + passed + ' tests passed.');

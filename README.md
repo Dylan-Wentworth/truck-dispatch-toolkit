@@ -2,8 +2,10 @@
 
 The math a U.S. truck dispatcher or owner-operator runs every day,
 in one zero-dependency JavaScript library and CLI: true rate per mile,
-load profit, hours-of-service feasibility, detention claims, and IFTA
-fuel tax estimates.
+load profit, hours-of-service feasibility, detention claims, IFTA
+fuel tax estimates, a personal lane rate book, broker payment
+scorecards, trip fuel planning, check-call schedules, and the full
+accessorial bundle.
 
 No accounts, no API keys, no build step, no dependencies. Clone it,
 run it, read every line of it. Built by **Dispatch Authority**.
@@ -21,14 +23,14 @@ run it, read every line of it. Built by **Dispatch Authority**.
 ```bash
 git clone https://github.com/aamirtechs/truck-dispatch-toolkit.git
 cd truck-dispatch-toolkit
-npm test          # 22 hand-checked tests, no install of anything needed
+npm test          # 50 hand-checked tests, no install of anything needed
 node bin/cli.js --help
 ```
 
 Node 18 or newer. There is nothing to `npm install`; the dependency
 list is empty on purpose.
 
-## The five tools
+## The ten tools
 
 ### 1. True rate (`rate`)
 
@@ -130,6 +132,118 @@ taxEstimate({ milesByState: { TX: 500, OK: 200 }, mpg: 7 });
 // TX: 71.43 gal, tax $14.29. OK: 28.57 gal, tax $5.71. totalTax $20.
 ```
 
+### 6. Lane rate book (`lane-add`, `lane-check`)
+
+Load boards show the market's rates. This keeps yours. Record every
+booked load in a JSON lane book, then check new offers against your
+own history on that lane: your average, the spread, and the counter
+to make. Judging starts at two loads on the lane; one load is an
+anecdote.
+
+```bash
+node bin/cli.js lane-add --file lanes.json --origin TX --dest OK --linehaul 1500 --loaded-miles 500 --date 2026-09-15
+node bin/cli.js lane-add --file lanes.json --origin TX --dest OK --linehaul 1320 --loaded-miles 440 --date 2026-10-02
+node bin/cli.js lane-check --file lanes.json --origin TX --dest OK --offered-linehaul 1200 --loaded-miles 500
+```
+
+```
+Added to lanes.json: TX-OK dry van, $1,500.00 on 500 miles ($3.00 per mile). 1 load(s) on this lane.
+Added to lanes.json: TX-OK dry van, $1,320.00 on 440 miles ($3.00 per mile). 2 load(s) on this lane.
+Lane check TX-OK
+  Your average:   $3.00 per mile on 2 loads
+  Offered:        $2.40 per mile ($1,200.00 on 500 miles)
+  Difference:     -20.00%
+  Verdict:        lowball
+  Counter at:     $1,650.00 (your average plus 10 percent)
+```
+
+### 7. Broker scorecard (`broker`)
+
+Grades a broker A to F from your own invoice history: average and
+median days to pay, percent late against terms, money outstanding,
+and a plain booking recommendation. It also annualizes quick-pay
+fees (library: `quickPayMath`), so "2 percent for quick-pay" can be
+compared honestly against factoring; 2 percent to be paid 20 days
+early is an effective annual rate of 37.24 percent.
+
+```bash
+node bin/cli.js broker --days 25,28,30 --amounts 2000,1800,2400 --terms 30
+```
+
+```
+Broker scorecard
+  Invoices:       3 paid, 0 unpaid
+  Average days:   27.67 (median 28.00, terms 30)
+  Late:           0.00% past terms
+  Billed:         $6,200.00   Outstanding: $0.00
+  Grade:          A
+  Recommendation: Safe to book, standard terms
+```
+
+### 8. Trip fuel plan (`fuel`)
+
+Gallons the trip burns, gallons you actually have to buy after
+starting fuel and your reserve, stops counted on usable gallons per
+fill, and the true burn cost per mile. The library also has
+`priceCompare`, which prices a cheaper pump against the detour fuel
+it takes to reach it.
+
+```bash
+node bin/cli.js fuel --total-miles 1800 --mpg 6 --tank-capacity 120 --starting-gallons 30 --fuel-price 3.90
+```
+
+```
+Fuel plan
+  Gallons needed: 300.00 gal
+  Fuel to buy:    285.00 gal (after starting fuel, keeping the reserve)
+  Stops needed:   3
+  Range (full):   720 miles
+  Burn cost:      $1,170.00 ($0.65 per mile)
+```
+
+### 9. Check-call schedule (`checkcall`)
+
+The update rhythm brokers grade you on, planned from the three
+times on the rate con: departure, arriving at the shipper, loaded,
+en-route calls on your interval, one hour out, and delivered with
+the POD requested. All times are UTC (convert before you run it).
+En-route calls that land in quiet hours are flagged, not dropped.
+
+```bash
+node bin/cli.js checkcall --departure 2026-10-05T11:00:00Z --pickup 2026-10-05T13:00:00Z --delivery 2026-10-06T13:00:00Z
+```
+
+```
+2026-10-05 11:00 UTC  departed, rolling to pickup
+2026-10-05 12:30 UTC  arriving at shipper
+2026-10-05 14:00 UTC  loaded, paperwork in hand
+2026-10-05 18:00 UTC  en route check call
+2026-10-05 22:00 UTC  en route check call (quiet hours)
+2026-10-06 02:00 UTC  en route check call (quiet hours)
+2026-10-06 06:00 UTC  en route check call
+2026-10-06 10:00 UTC  en route check call
+2026-10-06 12:00 UTC  one hour out
+2026-10-06 13:30 UTC  delivered, POD requested
+```
+
+### 10. Accessorials (`accessorials`)
+
+Layover and TONU beside the detention tool. TONU defaults to 25
+percent of the linehaul, floored at $150 and capped at $500, when
+the rate con names no figure. Add `--letter` with the load facts
+and it prints one combined claim letter covering every charge.
+
+```bash
+node bin/cli.js accessorials --layover-days 2 --tonu-linehaul 2000
+```
+
+```
+Accessorials
+  Layover: 2 day(s) at $250.00 per day = $500.00
+  TONU:    $500.00 (default 25% of linehaul, $150-$500)
+  Total:   $1,000.00
+```
+
 ## Library usage
 
 Every module is a pure CommonJS module with no dependencies, usable
@@ -152,6 +266,16 @@ const trip = toolkit.planTrip({ distanceMiles: 500, averageMph: 50, loadingHours
 const charge = toolkit.detentionCharge({
   arrivalISO: '2026-10-01T08:00:00Z', departureISO: '2026-10-01T12:10:00Z', ratePerHour: 65,
 });
+
+const book = toolkit.createLaneBook();
+toolkit.addLoad(book, { originState: 'TX', destState: 'OK', linehaul: 1500, loadedMiles: 500, dateISO: '2026-09-15' });
+const guard = toolkit.rateGuard(book, { originState: 'TX', destState: 'OK', offeredLinehaul: 1200, loadedMiles: 500 });
+const score = toolkit.scoreBroker({ invoices: [{ amount: 2000, daysToPay: 25 }], termsDays: 30 });
+const fuel = toolkit.planFuel({ totalMiles: 1800, mpg: 6, tankCapacityGallons: 120, startingGallons: 30, fuelPricePerGallon: 3.90 });
+const calls = toolkit.planCheckCalls({
+  departureISO: '2026-10-05T11:00:00Z', pickupISO: '2026-10-05T13:00:00Z', deliveryISO: '2026-10-06T13:00:00Z',
+});
+const tonu = toolkit.tonuCharge({ linehaul: 2000 });
 ```
 
 Every command also supports `--json` for machine-readable output.
@@ -168,6 +292,16 @@ Field checklists written from real dispatch operations:
 - [Driver onboarding documents](docs/checklists/driver-onboarding-documents.md):
   the DQ file, Clearinghouse, drug testing, and pay setup, with CFR
   references.
+- [First load with a new broker](docs/checklists/first-load-with-new-broker.md):
+  FMCSA and bond verification, factoring credit approval, written
+  money terms, and first-load precautions.
+
+## Playbooks (docs/playbooks)
+
+- [Broker rate negotiation](docs/playbooks/broker-rate-negotiation.md):
+  the talk track from opening questions to the counter at your
+  average plus 10, the walk-away line, and the accessorial clauses
+  to get on the rate con before booking.
 
 ## Important limits
 

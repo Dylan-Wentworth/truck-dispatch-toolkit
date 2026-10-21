@@ -3,6 +3,39 @@
 All notable changes to truck-dispatch-toolkit are recorded here.
 This project follows semantic versioning.
 
+## 1.1.0 (2026-10-21)
+
+Five new tools, all mirrored in the CLI.
+
+- `lanes`: personal lane rate book. Record booked loads, get lane
+  stats (average, median, min, max RPM) and a rate guard that judges
+  new offers against your own history with dispatcher counter
+  tactics: counter at your average on a soft offer, at your average
+  plus 10 percent on a lowball. JSON serialize and restore, plus a
+  per-equipment breakdown.
+- `broker`: broker payment scorecard (A to F) from your own invoice
+  history, with average and median days to pay, late percent,
+  outstanding money, unpaid flags, and booking recommendations.
+  Includes `quickPayMath`, which annualizes quick-pay fees for an
+  honest comparison against factoring.
+- `fuel`: trip fuel planner covering gallons burned, gallons to
+  buy after starting fuel and reserve, stops on usable gallons per
+  fill, and true burn cost per mile, plus `priceCompare` for fuel
+  stops priced with their detour cost included.
+- `checkcall`: check-call schedule generator (departure, shipper
+  arrival, loaded, en-route interval calls, one hour out, delivered
+  with POD requested), all UTC, with quiet-hours flagging and a
+  plain-text schedule renderer.
+- `accessorials`: layover charges, TONU (agreed figure, or the
+  default 25 percent of linehaul floored at $150 and capped at
+  $500), and a combined accessorial claim letter.
+- CLI: new `lane-add`, `lane-check`, `broker`, `fuel`, `checkcall`,
+  and `accessorials` commands, all with `--json` where sensible.
+- Docs: broker rate negotiation playbook, first-load-with-a-new-
+  broker checklist, and three new good first issues (GitHub Pages
+  demo, lane book CSV import, per-state fuel price tables).
+- Test suite: 50 hand-checked cases (22 existing, 28 new).
+
 ## 1.0.0 (2026-10-21)
 
 First public release.
