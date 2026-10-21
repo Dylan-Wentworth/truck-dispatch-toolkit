@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
 // Trip fuel planner.
 //
 // Two different fuel numbers matter on a trip, and mixing them up is
@@ -122,4 +125,48 @@ function priceCompare({ gallons, options } = {}) {
   return priced;
 }
 
-module.exports = { planFuel, priceCompare };
+// Load a dated historical diesel price snapshot.
+function loadFuelPrices(snapshotDate) {
+  if (typeof snapshotDate !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) {
+    throw new RangeError('snapshotDate must use YYYY-MM-DD format');
+  }
+
+  const filePath = path.join(
+    __dirname,
+    'data',
+    'fuel-prices',
+    snapshotDate + '.json'
+  );
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error('Fuel price snapshot not found: ' + snapshotDate);
+  }
+
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+// Look up a state's historical diesel price by snapshot date.
+function fuelPriceForState(state, snapshotDate) {
+  if (typeof state !== 'string' || state.trim() === '') {
+    throw new RangeError('state must be a non-empty string');
+  }
+
+  const snapshot = loadFuelPrices(snapshotDate);
+  const price = snapshot.prices[state];
+
+  if (typeof price !== 'number' || !Number.isFinite(price) || price < 0) {
+    throw new Error(
+      'Fuel price not found for state "' + state +
+      '" in snapshot ' + snapshotDate
+    );
+  }
+
+  return price;
+}
+
+module.exports = {
+  planFuel,
+  priceCompare,
+  loadFuelPrices,
+  fuelPriceForState,
+};
